@@ -92,6 +92,23 @@ namespace gpu_pointers {
 
       }
 
+      __device__ T apply_rmw(T (* RMW)(T)){
+
+
+         while (true){
+
+            T read_val = load_acq();
+
+            T next_val = RMW(read_val);
+
+            if ((atomicCAS(read_val, next_val)) == read_val) return read_val;
+
+         }
+
+
+
+      }
+
 
    };
 
