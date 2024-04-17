@@ -49,6 +49,49 @@ using namespace gallatin::allocators;
 #endif
 
 
+
+
+
+struct ll_node {
+
+   uint64_t data;
+   ll_node * next;
+
+   __device__ void init(uint64_t tid){
+      data = tid;
+      next = nullptr;
+      __threadfence();
+   }
+
+};
+
+
+__device__ bool append_to_linked_list(ll_node * current_tail, ll_node * my_node, bool is_atomic=true){
+
+
+   //printf("Inside function\n");
+
+   //ll_node * next = (ll_node *) gallatin::utils::ld_acq((uint64_t *) &current_tail->next);
+
+   if (is_atomic){
+
+         current_tail = (ll_node *) atomicCAS((unsigned long long int *)&current_tail->next, 0ULL, (uint64_t) my_node);
+         if (current_tail == 0ULL) return true;
+
+         return false;
+
+   } else {
+         current_tail->next = my_node;
+         __threadfence();
+         return true;
+   }
+
+
+}
+
+
+
+
 template <typename T>
 __host__ T * generate_data(uint64_t nitems){
 
@@ -149,8 +192,9 @@ __global__ void test_rmw_kernel(pointer_type<T> * ptr, uint64_t * bitarray, uint
 
    if (tid >= n_ops) return;
 
+
    
-   auto add_lambda = [](T a) { uint64_t ret_val = a+1; return ret_val;};
+   auto add_lambda = [](T a) { uint64_t ret_val = a; return ret_val;};
 
    T old = ptr->apply_rmw(add_lambda);
 
@@ -172,45 +216,61 @@ __global__ void test_rmw_kernel(pointer_type<T> * ptr, uint64_t * bitarray, uint
 
 }
 
-// template <typename pointer_type, typename T>
-// __global__ void test_cas_kernel(pointer_type * ptr, uint64_t * bitarray, uint64_t n_ops){
+
+template <template<typename> typename pointer_type>
+__global__ void test_mutate_kernel(pointer_type<ll_node> * ptr, uint64_t n_ops){
+
+   uint64_t tid = gallatin::utils::get_tid();
+
+   if (tid >= n_ops) return;
+
+   ll_node * my_node = (ll_node *) gallatin::allocators::global_malloc(sizeof(ll_node));
+
+   if (my_node == nullptr){
+      printf("Nullptr\n");
+   }
 
 
-//    uint64_t tid = gallatin::utils::get_tid();
-
-//    if (tid >= n_ops) return;
-
-//    T my_value = tid;
-
-//    T current_value = ptr->load_acq();
-
-//    while (true){
-
-//       T next_value = ptr->atomicCAS(current_value, my_value)
-
-//       if (next_value == current_value) break;
-
-//       __threadfence();
-//       current_value = next_value;
-      
-//    }
+   my_node->init(tid);
 
 
-//    #if CHECK_CORRECTNESS
+   ptr->apply_mutate_exchange(my_node, append_to_linked_list);
 
-//    uint64_t high = current_value/64;
-//    uint64_t low = current_value % 64;
-
-
-//    if (atomicOr((unsigned long long int *)&bitarray[high], (unsigned long long int) SET_BIT_MASK(low)) & SET_BIT_MASK(low)){
-//       printf("Double add to index %llu\n", current_value);
-//    }
+}
 
 
-//    #endif
+
+template <template<typename> typename pointer_type>
+__host__ void ll_test(uint64_t n_ops){
 
 
-// }
+   using ptr_type = pointer_type<ll_node>;
+
+   //ll_node * starter_node = gallatin::utils::get_host_version<ll_node>();
+
+   //starter_node->next = nullptr;
+
+   ptr_type * dev_ptr = ptr_type::generate_on_device(ll_node{0ULL,nullptr});
+
+   //cudaFreeHost(starter_node);
+
+
+
+   gallatin::utils::timer add_timer;
+
+   test_mutate_kernel<pointer_type><<<(n_ops-1)/512+1,512>>>(dev_ptr, n_ops);
+
+   add_timer.sync_end();
+
+   add_timer.print_throughput("Appended", n_ops);
+
+
+   ptr_type::free_on_device(dev_ptr);
+
+   //cudaFree(access_data);
+
+}
+
 
 
 //pull from blocks
@@ -304,7 +364,7 @@ __host__ void ptr_rmw_test(uint64_t n_ops){
 
    gallatin::utils::timer add_timer;
 
-   test_rmw_kernel<pointer_type, uint64_t><<<(n_ops-1)/1024+1,1024>>>(dev_ptr, bitarray, n_ops);
+   test_rmw_kernel<pointer_type, uint64_t><<<(n_ops-1)/512+1,512>>>(dev_ptr, bitarray, n_ops);
 
    add_timer.sync_end();
 
@@ -332,10 +392,12 @@ int main(int argc, char** argv) {
    }
 
 
-   // printf("Dummy ptr\n");
+   printf("Dummy ptr\n");
    // ptr_add_test<gpu_pointers::dummy_pointer>(n_ops);
 
    // ptr_exch_test<gpu_pointers::dummy_pointer>(n_ops);
+
+   // ptr_rmw_test<gpu_pointers::dummy_pointer>(1000000);
 
 
    // printf("Coalesced ptr\n");
@@ -343,9 +405,16 @@ int main(int argc, char** argv) {
 
    // ptr_exch_test<gpu_pointers::coalesce_pointer>(n_ops);
 
-   //ptr_rmw_test<gpu_pointers::dummy_pointer>(n_ops);
-   ptr_rmw_test<gpu_pointers::coalesce_pointer>(n_ops);
+   // ptr_rmw_test<gpu_pointers::dummy_pointer>(n_ops);
+   // ptr_rmw_test<gpu_pointers::coalesce_pointer>(n_ops);
 
+
+   gallatin::allocators::init_global_allocator(24ULL*1024*1024*1024, 42);
+
+   ll_test<gpu_pointers::dummy_pointer>(n_ops);
+   ll_test<gpu_pointers::coalesce_pointer>(n_ops);
+
+   gallatin::allocators::free_global_allocator();
 
    cudaDeviceReset();
    return 0;

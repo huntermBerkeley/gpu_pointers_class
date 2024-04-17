@@ -58,7 +58,7 @@ namespace gpu_pointers {
 
          my_type * host_version = gallatin::utils::move_to_host<my_type>(device_version);
 
-         cudaFree(host_version->internal_reference);
+         //cudaFree(host_version->internal_reference);
 
          cudaFreeHost(host_version);
 
@@ -128,6 +128,7 @@ namespace gpu_pointers {
       }
 
 
+      //make templatized?
       __device__ T apply_rmw(T (*RMW)(T)){
 
 
@@ -155,6 +156,8 @@ namespace gpu_pointers {
 
             }
 
+            __threadfence();
+
             //at this point read_val is the final value of the operation.
 
             bool success = false;
@@ -173,6 +176,62 @@ namespace gpu_pointers {
 
          }
 
+      }
+
+
+      //TODO? make templatized
+      __device__ void apply_mutate_exchange(T * my_arg, bool (*mutate_fn)(T *, T *, bool)){
+
+
+         
+
+         auto coalesced_team = cg::coalesced_threads();
+
+
+         //shuffle arguments to all threads
+         T * previous_thread_input = coalesced_team.shfl(my_arg, (coalesced_team.size() + coalesced_team.thread_rank()-1) % coalesced_team.size());
+
+
+         if (coalesced_team.thread_rank() != 0){
+
+            if (!mutate_fn(previous_thread_input, my_arg, false)){
+               //should never be reached - this would mean non-exclusive access for these threads.
+
+               //printf("Should not occur\n");
+               asm volatile("trap;");
+            }
+
+         }
+
+         //chain is built - all threads but 0 set.
+
+         coalesced_team.sync();
+         __threadfence();
+
+         while (true){
+
+            bool ballot = false;
+
+            if (coalesced_team.thread_rank() == 0){
+
+               T * head_node = (T *) gallatin::utils::ld_acq((uint64_t *)&internal_reference);
+
+               ballot = mutate_fn(head_node, my_arg, true);
+
+               if (ballot){
+
+                  gallatin::utils::typed_atomic_exchange((uint64_t *)&internal_reference, (uint64_t)previous_thread_input);
+
+
+               }
+
+            }
+
+            if (coalesced_team.ballot(ballot)) return;
+
+            __threadfence();
+
+         }
 
 
       }

@@ -59,7 +59,7 @@ namespace gpu_pointers {
 
          my_type * host_version = gallatin::utils::move_to_host<my_type>(device_version);
 
-         cudaFree(host_version->internal_reference);
+         //cudaFree(host_version->internal_reference);
 
          cudaFreeHost(host_version);
 
@@ -105,6 +105,31 @@ namespace gpu_pointers {
 
          }
 
+
+
+      }
+
+      __device__ void apply_mutate_exchange(T * my_arg, bool (*mutate_fn)(T *, T *, bool)){
+
+
+         while (true){
+
+            if (mutate_fn(internal_reference, my_arg, true)){
+
+
+         
+
+               gallatin::utils::typed_atomic_exchange((uint64_t *)&internal_reference, (uint64_t)my_arg);
+
+               return;
+
+            }
+
+
+
+            __threadfence();
+
+         }
 
 
       }

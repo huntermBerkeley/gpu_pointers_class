@@ -124,6 +124,30 @@ __global__ void test_exch_kernel(pointer_type<T> * ptr, pointer_type<T> * alt_pt
 
 }
 
+template <template<typename> typename pointer_type, typename T>
+__global__ void test_rmw_kernel(pointer_type<T> * ptr, pointer_type<T> * alt_ptr, uint64_t * bitarray, uint64_t n_ops){
+
+
+   uint64_t tid = gallatin::utils::get_tid();
+
+   if (tid >= n_ops) return;
+
+   
+   auto add_lambda = [](T a) { uint64_t ret_val = a+1; return ret_val;};
+
+   T old;
+
+   if (tid % 2 == 0){
+      old  = ptr->apply_rmw(add_lambda);
+   } else {
+      old  = alt_ptr->apply_rmw(add_lambda);
+   }
+
+
+   //printf("Done with %lu\n", tid);
+
+}
+
 // template <typename pointer_type, typename T>
 // __global__ void test_cas_kernel(pointer_type * ptr, uint64_t * bitarray, uint64_t n_ops){
 
@@ -243,6 +267,41 @@ __host__ void ptr_exch_test(uint64_t n_ops){
 }
 
 
+template <template<typename> typename pointer_type>
+__host__ void ptr_rmw_test(uint64_t n_ops){
+
+
+   using ptr_type = pointer_type<uint64_t>;
+
+   ptr_type * dev_ptr = ptr_type::generate_on_device(0ULL);
+   ptr_type * alt_ptr = ptr_type::generate_on_device(0ULL);
+
+   uint64_t n_lock_uints = (n_ops)/64+1;
+
+   uint64_t * bitarray = gallatin::utils::get_device_version<uint64_t>(n_lock_uints);
+
+   cudaMemset(bitarray, 0ULL, sizeof(uint64_t)*n_lock_uints);
+
+
+
+
+   gallatin::utils::timer add_timer;
+
+   test_rmw_kernel<pointer_type, uint64_t><<<(n_ops-1)/1024+1,1024>>>(dev_ptr, alt_ptr, bitarray, n_ops);
+
+   add_timer.sync_end();
+
+   add_timer.print_throughput("RMW'ed", n_ops);
+
+
+   ptr_type::free_on_device(dev_ptr);
+   ptr_type::free_on_device(alt_ptr);
+   cudaFree(bitarray);
+
+   //cudaFree(access_data);
+
+}
+
 int main(int argc, char** argv) {
 
    uint64_t n_ops;
@@ -261,11 +320,15 @@ int main(int argc, char** argv) {
 
    ptr_exch_test<gpu_pointers::dummy_pointer>(n_ops);
 
+   ptr_rmw_test<gpu_pointers::dummy_pointer>(1000000);
+
 
    printf("Coalesced ptr\n");
    ptr_add_test<gpu_pointers::coalesce_pointer>(n_ops);
 
    ptr_exch_test<gpu_pointers::coalesce_pointer>(n_ops);
+
+   ptr_rmw_test<gpu_pointers::coalesce_pointer>(n_ops);
 
 
    cudaDeviceReset();
